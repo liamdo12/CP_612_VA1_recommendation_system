@@ -40,7 +40,150 @@ ID Mapping Flow:
 
 ---
 
-## 2. Two-Phase Implementation Plan
+## 2. Data Cleaning Order and Dependencies
+
+### CRITICAL: You MUST Follow This Specific Order
+
+You CANNOT pick files randomly. The cleaning order matters due to data dependencies.
+
+### Correct Cleaning Sequence
+
+**Order 1: movies_metadata.csv (MUST BE FIRST)**
+
+Why first?
+- Dimension table that others depend on
+- Contains most data quality issues (malformed rows, missing values)
+- If a movie does not exist here, it is useless in other tables
+- Cleaning this first prevents wasted work on movies that will be dropped later
+
+What to clean:
+- Fix malformed id field (34 rows with parsing errors)
+- Drop rows with missing id or title (100 rows)
+- Parse JSON columns (genres, production companies, etc.)
+- Result: Clean movie master list
+
+**Order 2: links.csv (SECOND)**
+
+Why second?
+- Bridge table connecting ratings to metadata
+- Depends on movies_metadata (must verify tmdbId exists)
+- Ratings depends on this (must verify movieId exists)
+
+What to clean:
+- Check for missing movieId or tmdbId
+- Drop any incomplete mappings
+- Verify tmdbId exists in cleaned movies_metadata
+- Result: Valid movieId to tmdbId mappings
+
+**Order 3: ratings.csv or ratings_small.csv (THIRD)**
+
+Why third?
+- Fact table - your core collaborative filtering data
+- Depends on links (movieId must exist in links)
+- Should be cleaned AFTER knowing which movies are valid
+
+What to clean:
+- Check for missing values (usually none)
+- Remove duplicate ratings (keep most recent)
+- Verify movieId exists in cleaned links
+- Result: Clean user-movie interactions
+
+**Order 4: credits.csv and keywords.csv (LAST - OPTIONAL)**
+
+Why last?
+- Supplementary dimension tables
+- Only needed for hybrid or content-based approaches
+- Not required for pure collaborative filtering
+- Can be cleaned later if needed
+
+What to clean:
+- Parse JSON columns (cast, crew, keywords)
+- Drop rows with missing id
+- Verify id exists in cleaned movies_metadata
+
+### Visual Dependency Chain
+
+```
+Step 1: Clean movies_metadata.csv
+           ↓
+Step 2: Clean links.csv (verify against movies_metadata)
+           ↓
+Step 3: Clean ratings.csv (verify against links)
+           ↓
+Step 4: (Optional) Clean credits.csv, keywords.csv
+```
+
+### Why This Order Matters
+
+WRONG ORDER (Do not do this):
+- Clean ratings first → Many movieIds will not exist in links → Wasted work
+- Clean links first → Many tmdbIds will not exist in movies_metadata → Wasted work
+- Clean everything independently → Mismatched data when merging → Data loss
+
+CORRECT ORDER (Do this):
+- Clean movies_metadata → Establish valid movie list
+- Clean links → Establish valid mappings
+- Clean ratings → Establish valid interactions
+- Merge → All data is compatible, minimal loss
+
+### Cleaning Workflow Summary
+
+Stage 1: Individual File Cleaning (Follow Order)
+
+File 1: movies_metadata.csv
+- Load with correct data types
+- Convert id to numeric, drop errors
+- Drop rows with missing id or title
+- Parse JSON columns
+- Save: cleaned_movies_metadata.csv
+
+File 2: links.csv
+- Load links
+- Drop rows with missing movieId or tmdbId
+- Keep only tmdbIds that exist in cleaned movies_metadata
+- Save: cleaned_links.csv
+
+File 3: ratings.csv
+- Load ratings (start with ratings_small.csv)
+- Check for duplicates
+- Keep most recent rating per user-movie pair
+- Keep only movieIds that exist in cleaned links
+- Save: cleaned_ratings.csv
+
+Stage 2: Merge (After all individual cleaning)
+
+Merge Strategy:
+- cleaned_ratings.csv
+- merge with cleaned_links.csv on movieId (inner join)
+- merge with cleaned_movies_metadata.csv on tmdbId (inner join)
+- Result: final_dataset.csv
+
+### Dependency Summary Table
+
+| Order | File | Dependency | Can Skip? | Impact |
+|-------|------|------------|-----------|--------|
+| 1 | movies_metadata.csv | None (independent) | NO | Critical - defines valid movies |
+| 2 | links.csv | Depends on movies_metadata | NO | Critical - bridges ratings to metadata |
+| 3 | ratings.csv | Depends on links | NO | Critical - core CF data |
+| 4 | credits.csv | Depends on movies_metadata | YES | Optional - only for hybrid |
+| 5 | keywords.csv | Depends on movies_metadata | YES | Optional - only for hybrid |
+
+### Recommendation
+
+For Collaborative Filtering (minimum required):
+1. Clean movies_metadata.csv
+2. Clean links.csv
+3. Clean ratings_small.csv (start with small dataset for faster development)
+
+For Hybrid Models (later extension):
+4. Clean credits.csv
+5. Clean keywords.csv
+
+Start with ratings_small.csv (100K rows) instead of full ratings.csv (26M rows) for faster iteration.
+
+---
+
+## 3. Two-Phase Implementation Plan
 
 ### PHASE 1: Data Preparation and Cleaning
 
